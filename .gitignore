@@ -1,0 +1,23 @@
+# Python & Virtualenv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Application & Video Cache
+.cache/
+*.tmp.mp4
+daemon.log
+.DS_Store
+
+# SQLite Databases
+*.db
+*.db-wal
+*.db-shm
+
+# Google API Credentials & Tokens (Never commit secrets)
+credentials.json
+token.json
+service_account.json
+.env

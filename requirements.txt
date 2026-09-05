@@ -1,0 +1,11 @@
+# Google Drive & Sheets API
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# TTS — Microsoft Edge neural voices (free, no API key)
+edge-tts>=6.1.9
+
+# TTS fallback — offline macOS system voices
+pyttsx3>=2.90
