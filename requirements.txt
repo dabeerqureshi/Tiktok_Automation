@@ -9,3 +9,6 @@ edge-tts>=6.1.9
 
 # TTS fallback — offline macOS system voices
 pyttsx3>=2.90
+
+# Video frame rendering — Pillow cards, countdown graphics, AI label watermark
+Pillow>=10.0.0

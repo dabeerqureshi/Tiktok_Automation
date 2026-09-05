@@ -98,6 +98,27 @@ SOLUTION_DURATION    = int(os.getenv("SOLUTION_DURATION",    "5"))    # answer r
 EXPLANATION_DURATION = int(os.getenv("EXPLANATION_DURATION", "10"))   # narration screen
 
 # ---------------------------------------------------------------------------
+# CONTENT & MONETIZATION SAFETY
+# ---------------------------------------------------------------------------
+# Minimum total video length (seconds). TikTok's longer-video rewards program
+# requires longer-form content; enforcing >= 61s keeps every upload eligible.
+# If the assembled video is shorter, the countdown segment is auto-extended.
+MIN_TOTAL_DURATION = int(os.getenv("MIN_TOTAL_DURATION", "61"))
+
+# Maximum allowed length (seconds) for the user-uploaded AI clip.
+# Videos longer than this are rejected with a clear log before rendering.
+AI_CLIP_MAX_DURATION = int(os.getenv("AI_CLIP_MAX_DURATION", "10"))
+
+# Permanent "AI GENERATED" watermark label — required by TikTok for
+# AI-generated content so the video stays eligible for monetization.
+AI_LABEL_ENABLED = os.getenv("AI_LABEL_ENABLED", "true").lower() in ("true", "1", "yes")
+AI_LABEL_TEXT = os.getenv("AI_LABEL_TEXT", "AI GENERATED")
+
+# End-of-video call-to-action for retention signals.
+ENABLE_END_CTA = os.getenv("ENABLE_END_CTA", "true").lower() in ("true", "1", "yes")
+END_CTA_TEXT = os.getenv("END_CTA_TEXT", "Follow for more riddles!")
+
+# ---------------------------------------------------------------------------
 # TTS ENGINE
 # ---------------------------------------------------------------------------
 # Options: "edge-tts" (best — free Microsoft neural), "macos_say" (native offline), "pyttsx3"
@@ -124,6 +145,20 @@ REVEAL_SOUND_FILE    = LOCAL_ASSETS_DIR / "reveal_sound.mp3"
 
 # Music volume during countdown (0.0 – 1.0)
 COUNTDOWN_MUSIC_VOLUME = float(os.getenv("COUNTDOWN_MUSIC_VOLUME", "0.4"))
+
+# ---------------------------------------------------------------------------
+# FAILURE HANDLING & RETRIES
+# ---------------------------------------------------------------------------
+# Maximum render attempts per file before the daemon gives up and stops
+# hammering the same broken file. Deleting the file's DB record (or replacing
+# the source file in Drive, which changes its md5 and auto-resets) re-enables it.
+MAX_RENDER_ATTEMPTS = int(os.getenv("MAX_RENDER_ATTEMPTS", "3"))
+
+# Exponential backoff delays (seconds) between retries: ~5 min -> 30 min -> 2 h
+_env_delays = os.getenv("RETRY_BACKOFF_DELAYS", "300,1800,7200")
+RETRY_BACKOFF_DELAYS = [
+    int(x.strip()) for x in _env_delays.split(",") if x.strip()
+] or [300]
 
 # ---------------------------------------------------------------------------
 # POLLING & DAEMON BEHAVIOR

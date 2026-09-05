@@ -9,6 +9,7 @@ __pycache__/
 .cache/
 *.tmp.mp4
 daemon.log
+assets/
 .DS_Store
 
 # SQLite Databases

@@ -150,11 +150,19 @@ The first time you run it, a browser window will open for Google OAuth. Authoriz
 | Feature | Detail |
 |---------|--------|
 | **SQLite tracking** | Prevents any `vid_N` from being processed twice |
+| **Retry state machine** | Failed renders use exponential backoff (5 min → 30 min → 2 h) and auto-pause after 3 attempts — no infinite re-render loops |
+| **Source-change recovery** | Replacing a `vid_N.mp4` in Drive changes its md5 and automatically resets its failure state |
+| **Idempotent uploads** | `org_N.mp4` is only uploaded once — if it already exists in Drive, it's reused instead of duplicated |
+| **Input validation** | Uploaded clips are ffprobe-checked (must have a video stream, ≤ 10s) before rendering |
+| **Monetization guard** | Assembled videos are force-extended to `MIN_TOTAL_DURATION` (61s) via the countdown segment |
+| **AI-content labeling** | Permanent "AI GENERATED" watermark on the AI clip + cards (TikTok requirement for AI monetization) |
 | **Atomic writes** | Videos written to `.tmp` then renamed — no corrupt files |
 | **Work dir isolation** | Each riddle gets its own temp folder, auto-cleaned after render |
 | **Ollama fallback** | If Ollama is down, raw sheet explanation is used for TTS |
-| **edge-tts → pyttsx3 fallback** | If edge-tts fails, offline macOS voice kicks in |
+| **edge-tts → macOS say → pyttsx3** | Triple TTS fallback chain, never silently silent |
 | **Music auto-download** | Royalty-free CC0 music downloaded from Pixabay on first run |
+| **Log rotation** | `daemon.log` rotates at 10 MB × 5 backups — disk never fills |
+| **Concat fallback** | Lossless `-c copy` concat retries with a full re-encode if stream params ever mismatch |
 | **Graceful shutdown** | SIGINT/SIGTERM handled cleanly without leaving dangling processes |
 
 ---
@@ -168,6 +176,14 @@ The first time you run it, a browser window will open for Google OAuth. Authoriz
 | `COUNTDOWN_DURATION` | `40` | Seconds for the timer screen |
 | `SOLUTION_DURATION` | `5` | Minimum seconds for answer reveal |
 | `EXPLANATION_DURATION` | `10` | Minimum seconds for explanation |
+| `MIN_TOTAL_DURATION` | `61` | Enforced minimum video length; countdown auto-extends if shorter (TikTok monetization eligibility) |
+| `AI_CLIP_MAX_DURATION` | `10` | Rejects uploaded AI clips longer than this before rendering |
+| `AI_LABEL_ENABLED` | `true` | Draws the permanent "AI GENERATED" watermark (required for AI monetization) |
+| `AI_LABEL_TEXT` | `AI GENERATED` | Watermark text |
+| `ENABLE_END_CTA` | `true` | Shows "Follow for more riddles!" on the last screen |
+| `END_CTA_TEXT` | `Follow for more riddles!` | End-card call-to-action text |
+| `MAX_RENDER_ATTEMPTS` | `3` | Retry attempts before a broken file is paused |
+| `RETRY_BACKOFF_DELAYS` | `300,1800,7200` | Backoff seconds between retries (5 min → 30 min → 2 h) |
 | `TTS_ENGINE` | `edge-tts` | `edge-tts` or `pyttsx3` |
 | `TTS_VOICE` | `en-US-GuyNeural` | edge-tts voice name |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model to use |

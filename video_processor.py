@@ -15,7 +15,9 @@ Then concatenated losslessly using FFmpeg's concat demuxer (-c copy).
 Uses Pillow for high quality typography and graphics, avoiding FFmpeg
 drawtext / freetype compilation dependencies.
 """
+import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -57,69 +59,174 @@ def _get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
 
 
 # ===========================================================================
+# AI-GENERATED CONTENT LABEL
+# ===========================================================================
+
+def _make_ai_label_png(path: Path) -> Path:
+    """
+    Renders the permanent 'AI GENERATED' watermark as an RGBA PNG (transparent).
+    Overlaid on the AI clip segment so the finished video is clearly labeled —
+    required by TikTok monetization rules for AI-generated content.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGBA", (300, 74), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = _get_font(30)
+    text = config.AI_LABEL_TEXT or "AI GENERATED"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    pad_x, pad_y = 16, 10
+    box = [0, 0, text_w + pad_x * 2, text_h + pad_y * 2]
+    draw.rounded_rectangle(box, radius=14, fill=(0, 0, 0, 150))
+    draw.text((pad_x, pad_y), text, font=font, fill=(255, 255, 255, 230))
+    img.save(str(path), "PNG")
+    return path
+
+
+def _draw_ai_label(draw: ImageDraw.ImageDraw):
+    """Draws the small 'AI GENERATED' tag in the top-right corner of a card."""
+    if not config.AI_LABEL_ENABLED:
+        return
+    font = _get_font(28)
+    text = config.AI_LABEL_TEXT or "AI GENERATED"
+    # Shadow for contrast on any background
+    draw.text((W - 41, 41), text, font=font, fill=(0, 0, 0), anchor="ra")
+    draw.text((W - 40, 40), text, font=font, fill=(235, 235, 235), anchor="ra")
+
+
+def _draw_end_cta(draw: ImageDraw.ImageDraw):
+    """Draws the 'Follow for more riddles!' call-to-action at the bottom."""
+    if not config.ENABLE_END_CTA:
+        return
+    font = _get_font(48)
+    text = config.END_CTA_TEXT or "Follow for more riddles!"
+    draw.text((W // 2, H - 170), text, fill=(255, 215, 0), font=font, anchor="mm")
+
+
+# ===========================================================================
 # 1. AI CLIP NORMALIZER
 # ===========================================================================
 
-def normalize_ai_clip(input_path: Path, output_path: Path) -> bool:
+def normalize_ai_clip(
+    input_path: Path,
+    output_path: Path,
+    label_path: Optional[Path] = None,
+) -> bool:
     """
     Converts any input video to 1080x1920 (9:16) portrait.
     Background: scaled to fill + blurred (boxblur).
     Foreground: scaled to fit + centered sharp.
     Audio: guaranteed 44100Hz stereo AAC (adds silence if input has no audio).
+    If `label_path` is provided, the RGBA watermark is overlaid top-right.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(output_path)
 
     has_audio = _has_audio_stream(input_path)
+    clip_label = label_path if label_path and label_path.exists() else None
 
     if has_audio:
-        filter_complex = (
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
-            f"setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[vout];"
-            f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[aout]"
-        )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
-            "-filter_complex", filter_complex,
-            "-map", "[vout]",
-            "-map", "[aout]",
-            "-c:v", config.VIDEO_CODEC,
-            "-preset", config.VIDEO_PRESET,
-            "-r", str(FPS),
-            "-pix_fmt", "yuv420p",
-            "-c:a", config.AUDIO_CODEC,
-            "-b:a", config.AUDIO_BITRATE,
-            str(tmp),
-        ]
+        if clip_label:
+            filter_complex = (
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"setsar=1[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
+                f"[base][1:v]overlay=36:36[vout];"
+                f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[aout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-i", str(clip_label),
+                "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "[aout]",
+                "-c:v", config.VIDEO_CODEC,
+                "-preset", config.VIDEO_PRESET,
+                "-r", str(FPS),
+                "-pix_fmt", "yuv420p",
+                "-c:a", config.AUDIO_CODEC,
+                "-b:a", config.AUDIO_BITRATE,
+                str(tmp),
+            ]
+        else:
+            filter_complex = (
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"setsar=1[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[vout];"
+                f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[aout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "[aout]",
+                "-c:v", config.VIDEO_CODEC,
+                "-preset", config.VIDEO_PRESET,
+                "-r", str(FPS),
+                "-pix_fmt", "yuv420p",
+                "-c:a", config.AUDIO_CODEC,
+                "-b:a", config.AUDIO_BITRATE,
+                str(tmp),
+            ]
     else:
         # Generate silent audio track
-        filter_complex = (
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
-            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
-            f"setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[vout]"
-        )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-filter_complex", filter_complex,
-            "-map", "[vout]",
-            "-map", "1:a",
-            "-c:v", config.VIDEO_CODEC,
-            "-preset", config.VIDEO_PRESET,
-            "-r", str(FPS),
-            "-pix_fmt", "yuv420p",
-            "-c:a", config.AUDIO_CODEC,
-            "-b:a", config.AUDIO_BITRATE,
-            "-shortest",
-            str(tmp),
-        ]
+        if clip_label:
+            filter_complex = (
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"setsar=1[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
+                f"[base][1:v]overlay=36:36[vout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-i", str(clip_label),
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "2:a",
+                "-c:v", config.VIDEO_CODEC,
+                "-preset", config.VIDEO_PRESET,
+                "-r", str(FPS),
+                "-pix_fmt", "yuv420p",
+                "-c:a", config.AUDIO_CODEC,
+                "-b:a", config.AUDIO_BITRATE,
+                "-shortest",
+                str(tmp),
+            ]
+        else:
+            filter_complex = (
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},boxblur=20:5,setsar=1[bg];"
+                f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"setsar=1[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[vout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "1:a",
+                "-c:v", config.VIDEO_CODEC,
+                "-preset", config.VIDEO_PRESET,
+                "-r", str(FPS),
+                "-pix_fmt", "yuv420p",
+                "-c:a", config.AUDIO_CODEC,
+                "-b:a", config.AUDIO_BITRATE,
+                "-shortest",
+                str(tmp),
+            ]
 
     if _run(cmd, "normalize_ai_clip"):
         tmp.replace(output_path)
@@ -161,9 +268,12 @@ def build_countdown_segment(output_path: Path, duration: Optional[int] = None) -
             # Outer subtle border card
             draw.rounded_rectangle([50, 160, W - 50, H - 160], radius=40, outline=(40, 50, 90), width=3, fill=(16, 20, 42))
 
-            # Top Badge: TIME TO SOLVE
+            # Top Badge: TIME TO THINK
             draw.rounded_rectangle([320, 260, W - 320, 360], radius=25, fill=(255, 215, 0))
-            draw.text((W // 2, 310), "⏰  TIME TO THINK", fill=(12, 15, 32), font=font_badge, anchor="mm")
+            draw.text((W // 2, 310), "TIME TO THINK", fill=(12, 15, 32), font=font_badge, anchor="mm")
+
+            # AI-generated content watermark (top-right)
+            _draw_ai_label(draw)
 
             # Center circle timer container
             cx, cy, radius = W // 2, H // 2 - 40, 260
@@ -243,7 +353,7 @@ def build_solution_segment(answer: str, tts_audio: Path, output_path: Path) -> b
     """
     Generates the solution reveal screen:
     - High-aesthetic dark navy card with gold accents
-    - Header: 💡 THE ANSWER
+    - Header: THE ANSWER
     - Large answer text
     - TTS voice audio + optional reveal chime
     """
@@ -264,7 +374,10 @@ def build_solution_segment(answer: str, tts_audio: Path, output_path: Path) -> b
     # Badge: THE ANSWER
     font_badge = _get_font(48)
     draw.rounded_rectangle([320, 340, W - 320, 450], radius=25, fill=(255, 215, 0))
-    draw.text((W // 2, 395), "💡  THE ANSWER", fill=(10, 13, 28), font=font_badge, anchor="mm")
+    draw.text((W // 2, 395), "THE ANSWER", fill=(10, 13, 28), font=font_badge, anchor="mm")
+
+    # AI-generated content watermark (top-right)
+    _draw_ai_label(draw)
 
     # Wrapped answer text
     font_answer = _get_font(85)
@@ -350,9 +463,10 @@ def build_explanation_segment(explanation: str, tts_audio: Path, output_path: Pa
     """
     Generates the explanation screen:
     - Dark academia scholar card
-    - Header: 🧠 EXPLANATION
+    - Header: EXPLANATION
     - Formatted, wrapped explanation text
     - TTS voice audio narration
+    - AI watermark + follow call-to-action (retention)
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(output_path)
@@ -371,7 +485,10 @@ def build_explanation_segment(explanation: str, tts_audio: Path, output_path: Pa
     # Badge: EXPLANATION
     font_badge = _get_font(46)
     draw.rounded_rectangle([320, 290, W - 320, 395], radius=25, fill=(255, 215, 0))
-    draw.text((W // 2, 342), "🧠  EXPLANATION", fill=(8, 10, 24), font=font_badge, anchor="mm")
+    draw.text((W // 2, 342), "EXPLANATION", fill=(8, 10, 24), font=font_badge, anchor="mm")
+
+    # AI-generated content watermark (top-right)
+    _draw_ai_label(draw)
 
     # Multi-line explanation text
     font_body = _get_font(56)
@@ -383,6 +500,9 @@ def build_explanation_segment(explanation: str, tts_audio: Path, output_path: Pa
     for idx, line in enumerate(wrapped_lines):
         y = start_y + idx * line_h
         draw.text((W // 2, y), line, fill=(240, 243, 255), font=font_body, anchor="mm")
+
+    # Follow call-to-action (retention hook)
+    _draw_end_cta(draw)
 
     img.save(str(card_img), "PNG")
 
@@ -422,11 +542,49 @@ def build_explanation_segment(explanation: str, tts_audio: Path, output_path: Pa
 # 5. FINAL CONCATENATION
 # ===========================================================================
 
+def _concat_copy(segment_paths: List[Path], output: Path, list_file: Path) -> bool:
+    """Lossless concat via concat demuxer (-c copy). Fast, no quality loss."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_file),
+        "-c", "copy",
+        str(output),
+    ]
+    return _run(cmd, "concat_segments")
+
+
+def _concat_reencode(segment_paths: List[Path], output: Path) -> bool:
+    """
+    Fallback concat via the concat filter (full re-encode).
+    Slower but resilient to any subtle stream-parameter mismatch between segments.
+    """
+    n = len(segment_paths)
+    vfilter = "".join(f"[{i}:v]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vout]"
+    afilter = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]"
+    cmd = [
+        "ffmpeg", "-y",
+        *sum((["-i", str(s)] for s in segment_paths), []),
+        "-filter_complex", f"{vfilter};{afilter}",
+        "-map", "[vout]",
+        "-map", "[aout]",
+        "-c:v", config.VIDEO_CODEC,
+        "-preset", config.VIDEO_PRESET,
+        "-r", str(FPS),
+        "-pix_fmt", "yuv420p",
+        "-c:a", config.AUDIO_CODEC,
+        "-b:a", config.AUDIO_BITRATE,
+        str(output),
+    ]
+    return _run(cmd, "concat_segments_reencode")
+
+
 def concat_segments(segment_paths: List[Path], output_path: Path) -> bool:
     """
-    Concatenates multiple video segments using FFmpeg's concat demuxer.
-    Since all segments are strictly standardized (same codec, resolution, fps,
-    and 44100Hz stereo audio), -c copy is lossless and executes in < 0.2s.
+    Concatenates multiple video segments into one final video.
+    Tries lossless -c copy first; falls back to a full re-encode if stream
+    params ever mismatch so a render never dies because of a concat quirk.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(output_path)
@@ -437,15 +595,12 @@ def concat_segments(segment_paths: List[Path], output_path: Path) -> bool:
             for seg in segment_paths:
                 f.write(f"file '{seg.resolve()}'\n")
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(list_file),
-            "-c", "copy",
-            str(tmp),
-        ]
-        if _run(cmd, "concat_segments"):
+        if _concat_copy(segment_paths, tmp, list_file):
+            tmp.replace(output_path)
+            return True
+
+        logger.warning("Lossless concat failed — retrying with re-encode fallback...")
+        if _concat_reencode(segment_paths, tmp):
             tmp.replace(output_path)
             return True
         return False
@@ -486,17 +641,23 @@ def build_riddle_video(
     seg4 = work / "seg4_explanation.mp4"
     tts_solution = work / "tts_solution.aac"
     tts_explanation = work / "tts_explanation.aac"
+    label_png = work / "ai_label.png"
 
     try:
+        # Pre-render the "AI GENERATED" watermark (overlaid on the AI clip)
+        if config.AI_LABEL_ENABLED:
+            _make_ai_label_png(label_png)
+        label_path = label_png if config.AI_LABEL_ENABLED else None
+
         # [Seg 1/4] Normalize AI clip
         logger.info("  [Seg 1/4] Normalizing AI clip to 9:16 (1080x1920)...")
-        if not normalize_ai_clip(ai_video_path, seg1):
+        if not normalize_ai_clip(ai_video_path, seg1, label_path):
             logger.error("Segment 1 (AI clip normalization) FAILED.")
             return False
 
         # [Seg 2/4] Countdown timer
         logger.info(f"  [Seg 2/4] Building {config.COUNTDOWN_DURATION}s countdown timer...")
-        if not build_countdown_segment(seg2):
+        if not build_countdown_segment(seg2, config.COUNTDOWN_DURATION):
             logger.error("Segment 2 (countdown) FAILED.")
             return False
 
@@ -524,7 +685,30 @@ def build_riddle_video(
             logger.error("Segment 4 (explanation screen) FAILED.")
             return False
 
-        # [Concat] Concatenate all 4 segments losslessly
+        # [Duration check] Enforce TikTok monetization minimum length by
+        # extending the countdown if the assembled video would be too short.
+        dur1 = _get_duration(seg1) or 0.0
+        dur2 = _get_duration(seg2) or 0.0
+        dur3 = _get_duration(seg3) or 0.0
+        dur4 = _get_duration(seg4) or 0.0
+        total = dur1 + dur2 + dur3 + dur4
+
+        deficit = config.MIN_TOTAL_DURATION - total
+        if deficit > 0:
+            extra = int(math.ceil(deficit))
+            logger.info(
+                f"  [Duration] Assembled video {total:.1f}s < "
+                f"MIN_TOTAL_DURATION={config.MIN_TOTAL_DURATION}s — "
+                f"extending countdown by {extra}s."
+            )
+            if not build_countdown_segment(seg2, config.COUNTDOWN_DURATION + extra):
+                logger.error("Countdown extension FAILED.")
+                return False
+            dur2 = _get_duration(seg2) or 0.0
+            total = dur1 + dur2 + dur3 + dur4
+        logger.info(f"  [Duration] Final video length: {total:.1f}s")
+
+        # [Concat] Concatenate all 4 segments (lossless + re-encode fallback)
         logger.info("  [Concat] Joining all 4 segments into final video...")
         segments = [seg1, seg2, seg3, seg4]
         if not concat_segments(segments, output_path):
@@ -584,13 +768,18 @@ def _has_audio_stream(video_path: Path) -> bool:
 
 def _get_audio_duration(audio_path: Path) -> Optional[float]:
     """Returns audio file duration in seconds using ffprobe."""
+    return _get_duration(audio_path)
+
+
+def _get_duration(path: Path) -> Optional[float]:
+    """Returns media file duration in seconds using ffprobe (video or audio)."""
     try:
         res = subprocess.run(
             [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
-                str(audio_path),
+                str(path),
             ],
             capture_output=True, text=True, timeout=10
         )
@@ -599,6 +788,39 @@ def _get_audio_duration(audio_path: Path) -> Optional[float]:
     except Exception:
         pass
     return None
+
+
+def probe_ai_clip(video_path: Path) -> Tuple[Optional[float], bool]:
+    """
+    Validates an uploaded AI clip before rendering.
+    Returns (duration_seconds, has_video_stream). If ffprobe cannot read the
+    file at all, returns (None, False) so the caller can mark it invalid.
+    """
+    try:
+        res = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-print_format", "json",
+                "-show_format", "-show_streams",
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=15
+        )
+        if res.returncode != 0 or not res.stdout.strip():
+            logger.warning(f"ffprobe could not read '{video_path.name}': "
+                           f"{res.stderr.strip()[-200:]}")
+            return None, False
+
+        data = json.loads(res.stdout)
+        has_video = any(
+            s.get("codec_type") == "video" for s in data.get("streams", [])
+        )
+        raw_dur = data.get("format", {}).get("duration")
+        duration = float(raw_dur) if raw_dur else None
+        return duration, has_video
+    except Exception as e:
+        logger.warning(f"probe_ai_clip failed for '{video_path.name}': {e}")
+        return None, False
 
 
 def _wrap_text_lines(text: str, max_chars: int = 25) -> List[str]:

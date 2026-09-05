@@ -18,6 +18,7 @@ import re
 import signal
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -37,7 +38,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("daemon.log", encoding="utf-8"),
+        RotatingFileHandler(
+            "daemon.log",
+            maxBytes=10 * 1024 * 1024,   # 10 MB per file
+            backupCount=5,               # keeps daemon.log.1 .. .5
+            encoding="utf-8",
+        ),
     ]
 )
 logger = logging.getLogger("TikTokDaemon")
@@ -134,6 +140,13 @@ def process_drive_queue(
     """
     Scans 'AI Generated Videos' folder, builds & uploads riddle videos.
     Returns count of newly completed renders.
+
+    - Completed files are skipped forever (SQLite).
+    - Failed files are retried with exponential backoff, then permanently
+      paused after MAX_RENDER_ATTEMPTS (auto-re-enabled when the source file is
+      replaced in Drive, i.e. its md5 changes).
+    - Uploads are idempotent: if org_N.mp4 already lives in the final folder,
+      it is reused instead of uploading a duplicate.
     """
     ai_drive_videos = gdrive.list_videos_in_folder(folder_ids["ai"])
 
@@ -155,42 +168,35 @@ def process_drive_queue(
         if not RUNNING:
             break
 
-        ai_name = ai_file["name"]
-        ai_id   = ai_file["id"]
+        ai_name   = ai_file["name"]
+        ai_id     = ai_file["id"]
+        ai_md5    = ai_file.get("md5Checksum")
 
-        # Skip already-done
-        if db.is_already_processed(ai_name):
+        # ---- Retry / state management ----
+        record = db.get_record(ai_name)
+        if record and record.get("status") == "completed":
+            logger.info(f"  ⏭ '{ai_name}' already processed — skipping.")
             continue
+        if record and record.get("status") == "failed":
+            if not db.is_retryable(ai_name, current_md5=ai_md5):
+                logger.info(
+                    f"  ⏸  '{ai_name}' failed previously and is in backoff or "
+                    f"exhausted (attempts {record.get('attempts')}) — waiting. "
+                    f"Replace the file in Drive to force a re-render."
+                )
+                continue
+            db.reset_failure(ai_name)   # retry window opened OR file replaced
+            logger.info(
+                f"  🔁 '{ai_name}' retry window opened (or file replaced) — reprocessing."
+            )
 
         ai_num = extract_number(ai_name)
         if ai_num == -1:
-            logger.warning(f"Skipping '{ai_name}': cannot extract index number.")
+            err = f"Cannot extract index number from '{ai_name}'. Expected vid_N.mp4"
+            logger.warning(f"Skipping '{ai_name}': {err}")
+            db.register_failure(ai_name, err, md5_checksum=ai_md5,
+                                ai_drive_id=ai_id, permanent=True)
             continue
-
-        # ---- Read sheet metadata ----
-        logger.info("=" * 65)
-        logger.info(f"Processing: {ai_name}  (index {ai_num})")
-
-        metadata = sheet.get_row(ai_num)
-        if not metadata:
-            logger.warning(
-                f"Sheet row {ai_num} missing for '{ai_name}'. "
-                f"Make sure your Google Sheet has data in row {ai_num + 1} "
-                f"(row 1 = header)."
-            )
-            continue
-
-        answer      = metadata.get("answer", "").strip()
-        explanation = metadata.get("explanation", "").strip()
-
-        if not answer:
-            logger.warning(
-                f"Answer is empty for sheet row {ai_num}. Skipping '{ai_name}'."
-            )
-            continue
-
-        logger.info(f"  Answer     : {answer}")
-        logger.info(f"  Explanation: {explanation[:80]}{'...' if len(explanation) > 80 else ''}")
 
         # ---- File paths ----
         final_name      = f"org_{ai_num}.mp4"
@@ -198,11 +204,54 @@ def process_drive_queue(
         local_final_path = config.LOCAL_FINAL_DIR / final_name
         work_dir        = config.LOCAL_WORK_DIR / f"work_{ai_num}"
 
+        logger.info("=" * 65)
+        logger.info(f"Processing: {ai_name}  (index {ai_num})")
+
+        answer = explanation = ""
         try:
-            # ---- Download AI clip ----
+            # ---- Download AI clip (reuse already-downloaded copy) ----
             if not local_ai_path.exists() or local_ai_path.stat().st_size == 0:
                 logger.info(f"  Downloading '{ai_name}' from Google Drive...")
                 gdrive.download_file(ai_id, local_ai_path)
+
+            # ---- Validate the clip BEFORE rendering (no ffmpeg crash loops) ----
+            duration, has_video = video_processor.probe_ai_clip(local_ai_path)
+            if not has_video:
+                err = "Invalid AI clip — ffprobe found no video stream."
+                logger.error(f"  ❌ '{ai_name}': {err}")
+                db.register_failure(ai_name, err, md5_checksum=ai_md5,
+                                    ai_drive_id=ai_id, permanent=True)
+                continue
+            if duration and duration > config.AI_CLIP_MAX_DURATION:
+                err = (f"AI clip is {duration:.1f}s, exceeding AI_CLIP_MAX_DURATION="
+                       f"{config.AI_CLIP_MAX_DURATION}s. Please upload a 0-10s clip.")
+                logger.error(f"  ❌ '{ai_name}': {err}")
+                db.register_failure(ai_name, err, md5_checksum=ai_md5,
+                                    ai_drive_id=ai_id, permanent=True)
+                continue
+
+            # ---- Read sheet metadata ----
+            metadata = sheet.get_row(ai_num)
+            if not metadata:
+                err = f"No sheet row found for vid_{ai_num} (sheet row {ai_num + 1})."
+                logger.error(f"  ❌ '{ai_name}': {err}")
+                db.register_failure(ai_name, err, md5_checksum=ai_md5,
+                                    ai_drive_id=ai_id, permanent=True)
+                continue
+
+            answer      = metadata.get("answer", "").strip()
+            explanation = metadata.get("explanation", "").strip()
+
+            if not answer:
+                err = f"Sheet row {ai_num + 1} has an empty Answer (column B)."
+                logger.error(f"  ❌ '{ai_name}': {err}")
+                db.register_failure(ai_name, err, md5_checksum=ai_md5,
+                                    ai_drive_id=ai_id, sheet_row=ai_num,
+                                    permanent=True)
+                continue
+
+            logger.info(f"  Answer     : {answer}")
+            logger.info(f"  Explanation: {explanation[:80]}{'...' if len(explanation) > 80 else ''}")
 
             # ---- Build 4-segment riddle video ----
             logger.info(f"  Building riddle video → {final_name}")
@@ -216,6 +265,9 @@ def process_drive_queue(
 
             if not success or not local_final_path.exists():
                 logger.error(f"  Render FAILED for '{ai_name}'. Skipping upload.")
+                db.register_failure(ai_name, "Render pipeline returned failure.",
+                                    md5_checksum=ai_md5, ai_drive_id=ai_id,
+                                    sheet_row=ai_num, answer=answer)
                 continue
 
             file_size_mb = local_final_path.stat().st_size / (1024 * 1024)
@@ -223,16 +275,24 @@ def process_drive_queue(
                 f"  Render complete: {final_name} ({file_size_mb:.1f} MB)"
             )
 
-            # ---- Upload to Drive ----
-            logger.info(f"  Uploading '{final_name}' to Google Drive 'Final Videos'...")
-            upload_result = gdrive.upload_file(
-                local_path=local_final_path,
-                parent_folder_id=folder_ids["final"],
-                file_name=final_name,
-            )
-            final_drive_id = upload_result.get("id")
+            # ---- Upload to Drive (idempotent — reuse existing org_N.mp4) ----
+            existing = gdrive.find_file_in_folder(folder_ids["final"], final_name)
+            if existing:
+                final_drive_id = existing["id"]
+                logger.info(
+                    f"  📦 '{final_name}' already present in Drive "
+                    f"(ID {final_drive_id}) — reusing, skipped upload."
+                )
+            else:
+                logger.info(f"  Uploading '{final_name}' to Google Drive 'Final Videos'...")
+                upload_result = gdrive.upload_file(
+                    local_path=local_final_path,
+                    parent_folder_id=folder_ids["final"],
+                    file_name=final_name,
+                )
+                final_drive_id = upload_result.get("id")
 
-            # ---- Mark complete in SQLite ----
+            # ---- Mark complete in SQLite (clears any prior failure state) ----
             db.mark_as_processed(
                 ai_filename=ai_name,
                 final_filename=final_name,
@@ -240,7 +300,7 @@ def process_drive_queue(
                 answer=answer,
                 ai_drive_id=ai_id,
                 final_drive_id=final_drive_id,
-                status="completed",
+                md5_checksum=ai_md5,
             )
 
             logger.info(
@@ -263,6 +323,10 @@ def process_drive_queue(
             logger.error(
                 f"  Error processing '{ai_name}': {e}", exc_info=True
             )
+            db.register_failure(ai_name, f"Processing error: {e}",
+                                md5_checksum=ai_md5, ai_drive_id=ai_id,
+                                sheet_row=ai_num,
+                                answer=answer or None)
 
     return rendered_count
 

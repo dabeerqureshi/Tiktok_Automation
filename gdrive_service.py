@@ -182,6 +182,27 @@ class GDriveService:
     # FILE LISTING
     # -----------------------------------------------------------------------
 
+    def find_file_in_folder(self, folder_id: str, file_name: str) -> Optional[Dict]:
+        """
+        Finds a non-trashed file by exact name inside a folder.
+        Returns { id, name, size, md5Checksum } or None.
+        Used for idempotent uploads — if org_N.mp4 already exists, we reuse it
+        instead of creating a duplicate on every retry.
+        """
+        safe_name = file_name.replace("'", "\\'")
+        query = (
+            f"'{folder_id}' in parents "
+            f"and trashed = false "
+            f"and name = '{safe_name}'"
+        )
+        result = self.service.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id, name, size, md5Checksum)"
+        ).execute()
+        files = result.get("files", [])
+        return files[0] if files else None
+
     def list_videos_in_folder(self, folder_id: str) -> List[Dict]:
         """
         Lists all video files (non-folder, non-trashed) inside a Drive folder.
