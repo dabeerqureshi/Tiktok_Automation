@@ -54,6 +54,12 @@ CREDENTIALS_FILE    = Path(os.getenv("CREDENTIALS_FILE",    "./credentials.json"
 TOKEN_FILE          = Path(os.getenv("TOKEN_FILE",          "./token.json"))
 SERVICE_ACCOUNT_FILE = Path(os.getenv("SERVICE_ACCOUNT_FILE", "./service_account.json"))
 
+# Google OAuth 2.0 app credentials from Google Console (Client ID + Secret).
+# These let you authenticate WITHOUT a credentials.json file — just set them
+# in your .env. `run.sh` loads .env via `set -a` so they land here automatically.
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+
 # OAuth scopes — includes Drive (upload/download) AND Sheets (read metadata)
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -111,7 +117,7 @@ AI_CLIP_MAX_DURATION = int(os.getenv("AI_CLIP_MAX_DURATION", "10"))
 
 # Permanent "AI GENERATED" watermark label — required by TikTok for
 # AI-generated content so the video stays eligible for monetization.
-AI_LABEL_ENABLED = os.getenv("AI_LABEL_ENABLED", "true").lower() in ("true", "1", "yes")
+AI_LABEL_ENABLED = os.getenv("AI_LABEL_ENABLED", "false").lower() in ("true", "1", "yes")
 AI_LABEL_TEXT = os.getenv("AI_LABEL_TEXT", "AI GENERATED")
 
 # End-of-video call-to-action for retention signals.
@@ -144,7 +150,7 @@ COUNTDOWN_MUSIC_FILE = LOCAL_ASSETS_DIR / "countdown_music.mp3"
 REVEAL_SOUND_FILE    = LOCAL_ASSETS_DIR / "reveal_sound.mp3"
 
 # Music volume during countdown (0.0 – 1.0)
-COUNTDOWN_MUSIC_VOLUME = float(os.getenv("COUNTDOWN_MUSIC_VOLUME", "0.4"))
+COUNTDOWN_MUSIC_VOLUME = float(os.getenv("COUNTDOWN_MUSIC_VOLUME", "0.85"))
 
 # ---------------------------------------------------------------------------
 # FAILURE HANDLING & RETRIES

@@ -35,6 +35,27 @@ class GDriveService:
     # AUTHENTICATION
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _client_config_from_env() -> Optional[dict]:
+        """
+        Builds the Google 'installed' client config from .env values
+        (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET). Returns None if either is missing,
+        so callers can fall back to credentials.json.
+        """
+        cid = config.GOOGLE_CLIENT_ID.strip()
+        sec = config.GOOGLE_CLIENT_SECRET.strip()
+        if not cid or not sec:
+            return None
+        return {
+            "installed": {
+                "client_id": cid,
+                "client_secret": sec,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"],
+            }
+        }
+
     def authenticate(self):
         """
         Authenticates with Google Drive + Sheets using either:
@@ -69,10 +90,13 @@ class GDriveService:
                 logger.info("Refreshing expired Google Drive OAuth token...")
                 self.creds.refresh(Request())
             else:
-                if not config.CREDENTIALS_FILE.exists():
+                client_config = self._client_config_from_env()
+                if not client_config and not config.CREDENTIALS_FILE.exists():
                     raise FileNotFoundError(
                         f"No Google Drive credentials found!\n"
-                        f"Place '{config.CREDENTIALS_FILE.name}' (OAuth Client ID) or "
+                        f"Either add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to your "
+                        f".env file, or place '{config.CREDENTIALS_FILE.name}' "
+                        f"(OAuth Client ID JSON) or "
                         f"'{config.SERVICE_ACCOUNT_FILE.name}' (Service Account) "
                         f"in the project directory.\n"
                         f"Refer to README.md for step-by-step instructions."
@@ -82,10 +106,17 @@ class GDriveService:
                     "NOTE: The consent screen will request Drive + Sheets access "
                     "(needed to read your riddle spreadsheet)."
                 )
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(config.CREDENTIALS_FILE),
-                    config.SCOPES
-                )
+                if client_config:
+                    logger.info("Using GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET from .env")
+                    flow = InstalledAppFlow.from_client_config(
+                        client_config,
+                        config.SCOPES
+                    )
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        str(config.CREDENTIALS_FILE),
+                        config.SCOPES
+                    )
                 self.creds = flow.run_local_server(port=0)
 
             # Persist token for 24/7 background reuse

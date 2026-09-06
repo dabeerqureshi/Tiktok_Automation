@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -78,37 +79,181 @@ def extract_number(filename: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# ASSET BOOTSTRAP — download royalty-free music if missing
+# ASSET BOOTSTRAP — download or synthesize royalty-free music if missing
 # ---------------------------------------------------------------------------
+
+# URLs may 403 (hotlink protection) or fail offline, so we fall back to
+# synthesizing royalty-free audio locally with FFmpeg. Procedural synthesis
+# is 100% original & copyright-free — no Pixabay account or legal risk.
+
+_ASSET_SOURCES = [
+    (
+        config.COUNTDOWN_MUSIC_FILE,
+        "https://cdn.pixabay.com/audio/2023/02/27/audio_d6adea2e9b.mp3",
+        "countdown_music.mp3",
+        "synthesize_countdown",
+    ),
+    (
+        config.REVEAL_SOUND_FILE,
+        "https://cdn.pixabay.com/audio/2022/03/15/audio_1c7b82ddee.mp3",
+        "reveal_sound.mp3",
+        "synthesize_reveal",
+    ),
+]
+
+
+def _validate_audio(path: Path, min_bytes: int = 500) -> bool:
+    """Returns True if `path` exists, has data, and ffprobe can read audio."""
+    if not path or not path.exists() or path.stat().st_size < min_bytes:
+        return False
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return res.returncode == 0 and res.stdout.strip() == "audio"
+    except Exception:
+        return False
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> bool:
+    """Writes `data` to a temp file, then renames atomically."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        return path.stat().st_size > 0
+    except Exception as e:
+        logger.warning(f"Could not write asset '{path.name}': {e}")
+        return False
+
+
+def _run_synth(cmd: List[str], label: str) -> bool:
+    """Runs an FFmpeg synthesis command and validates the output."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            logger.warning(
+                f"Synthesis '{label}' failed (rc={result.returncode}): "
+                f"{result.stderr[-200:]}"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"Synthesis '{label}' crashed: {e}")
+        return False
+
+
+def _synthesize_countdown(path: Path) -> bool:
+    """
+    Generates a catchy, tension-building rhythmic beat for the countdown.
+    Layered kick drum pulse + bass pulse + hi-hat tick that speeds up toward
+    the end to create anticipation. 100% original audio.
+    """
+    logger.info(f"Synthesizing '{path.name}' (catchy countdown beat)...")
+    tmp = path.with_name(f".{path.name}.synth.tmp.mp3")
+    # Build a rhythmic pattern: kick + bass on the beat, hi-hat ticks,
+    # with a riser at the end for tension. Uses volume envelopes to shape
+    # the beat so it pulses and accelerates.
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i",
+        "aevalsrc="
+        # Kick drum: low sine with fast decay, pulsing at 1.5Hz (90 BPM)
+        "0.40*sin(2*PI*60*t)*exp(-8*(t-floor(t*1.5)/1.5))"
+        # Bass pulse: root note with tremolo
+        "+0.25*sin(2*PI*110*t)*(0.5+0.5*sin(2*PI*3*t))"
+        # Hi-hat: high-frequency noise bursts on off-beats
+        "+0.12*sin(2*PI*8000*t)*pow(abs(sin(2*PI*1.5*t)),8)"
+        # Snare/clap on beats 2 and 4
+        "+0.18*sin(2*PI*200*t)*exp(-12*(t-floor(t*0.75)/0.75))"
+        # Tension riser: rising sine that gets louder toward the end (last 3s)
+        "+0.15*sin(2*PI*(220+1800*max(0,t-5)/3)*t)*max(0,(t-5)/3)"
+        ":s=44100:d=8",
+        "-af", (
+            "highpass=f=40,"
+            "lowpass=f=12000,"
+            "acompressor=ratio=4:threshold=-12dB:attack=2:release=50,"
+            "afade=t=in:st=0:d=0.5,"
+            "afade=t=out:st=6.5:d=1.5,"
+            "volume=0.9,"
+            "aformat=sample_rates=44100:channel_layouts=stereo"
+        ),
+        "-c:a", "libmp3lame", "-b:a", "192k",
+        str(tmp),
+    ]
+    if _run_synth(cmd, "countdown_music"):
+        if _validate_audio(tmp):
+            tmp.replace(path)
+            logger.info(f"  ✅ Synthesized countdown music: {path.name}")
+            return True
+        tmp.unlink(missing_ok=True)
+    return False
+
+
+def _synthesize_reveal(path: Path) -> bool:
+    """
+    Generates a warm bell 'ding' (880 Hz + 1760 Hz partials, exponential
+    decay) — a clean answer-reveal chime. 100% original audio.
+    """
+    logger.info(f"Synthesizing '{path.name}' (reveal chime)...")
+    tmp = path.with_name(f".{path.name}.synth.tmp.mp3")
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i",
+        "aevalsrc="
+        "0.30*sin(2*PI*880*t)*exp(-4*t)"
+        "+0.15*sin(2*PI*1760*t)*exp(-5*t)"
+        ":s=44100:d=1.6",
+        "-af", (
+            "afade=t=in:st=0:d=0.01,"
+            "afade=t=out:st=1.0:d=0.6,"
+            "aformat=sample_rates=44100:channel_layouts=stereo"
+        ),
+        "-c:a", "libmp3lame", "-b:a", "128k",
+        str(tmp),
+    ]
+    if _run_synth(cmd, "reveal_sound"):
+        if _validate_audio(tmp):
+            tmp.replace(path)
+            logger.info(f"  ✅ Synthesized reveal sound: {path.name}")
+            return True
+        tmp.unlink(missing_ok=True)
+    return False
+
+
+_SYNTH_FUNCS = {
+    "synthesize_countdown": _synthesize_countdown,
+    "synthesize_reveal": _synthesize_reveal,
+}
+
 
 def ensure_assets():
     """
-    Downloads royalty-free countdown music + reveal sound from Pixabay
-    if not already present in the assets/ directory.
+    Ensures both audio assets exist under assets/ using a 3-tier strategy:
+      1. Pre-existing file (user-supplied override)       → keep
+      2. Download from Pixabay (CC0)                       → use
+      3. Local FFmpeg synthesis (offline, copyright-free)  → fallback
+    Callers (countdown/solution segments) already degrade to silent audio if
+    an asset is still missing, so a fresh setup is never blocked.
     """
-    config.LOCAL_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-
-    assets_to_fetch = [
-        (
-            config.COUNTDOWN_MUSIC_FILE,
-            # Thinking music — soft ambient, CC0 from Pixabay
-            "https://cdn.pixabay.com/audio/2023/02/27/audio_d6adea2e9b.mp3",
-            "countdown_music.mp3",
-        ),
-        (
-            config.REVEAL_SOUND_FILE,
-            # Short reveal chime — CC0 from Pixabay
-            "https://cdn.pixabay.com/audio/2022/03/15/audio_1c7b82ddee.mp3",
-            "reveal_sound.mp3",
-        ),
-    ]
-
     import urllib.request
 
-    for dest_path, url, name in assets_to_fetch:
-        if dest_path.exists() and dest_path.stat().st_size > 0:
-            logger.info(f"Asset already present: {name}")
+    config.LOCAL_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for dest_path, url, name, synth_key in _ASSET_SOURCES:
+        # Tier 1 — already present & valid
+        if _validate_audio(dest_path):
+            logger.info(f"Asset already present & valid: {name}")
             continue
+
+        # Tier 2 — attempt download
+        downloaded = False
         try:
             logger.info(f"Downloading asset '{name}' from Pixabay (CC0)...")
             req = urllib.request.Request(
@@ -117,17 +262,28 @@ def ensure_assets():
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read()
-                if len(data) > 1000:
-                    with open(dest_path, "wb") as f:
-                        f.write(data)
-                    logger.info(f"Asset saved: {dest_path} ({len(data)} bytes)")
+                if len(data) > 1000 and _atomic_write_bytes(dest_path, data):
+                    if _validate_audio(dest_path):
+                        logger.info(f"  ✅ Downloaded asset '{name}' "
+                                    f"({dest_path.stat().st_size} bytes)")
+                        downloaded = True
         except Exception as e:
+            logger.warning(f"Could not auto-download '{name}' ({e}).")
+
+        if downloaded:
+            continue
+
+        # Tier 3 — synthesize offline (Pixabay hotlink-protection/offline fallback)
+        synth_fn = _SYNTH_FUNCS.get(synth_key)
+        if synth_fn is not None:
+            if synth_fn(dest_path):
+                continue
             logger.warning(
-                f"Could not auto-download '{name}' ({e}). "
+                f"Synthesis failed for '{name}'. "
                 f"You can place your own audio file at: {dest_path}"
             )
-
-
+        else:
+            logger.warning(f"No fallback synthesizer for '{name}'.")
 # ---------------------------------------------------------------------------
 # MAIN PROCESSING LOOP
 # ---------------------------------------------------------------------------
@@ -214,7 +370,7 @@ def process_drive_queue(
                 logger.info(f"  Downloading '{ai_name}' from Google Drive...")
                 gdrive.download_file(ai_id, local_ai_path)
 
-            # ---- Validate the clip BEFORE rendering (no ffmpeg crash loops) ----
+                                                # ---- Validate the clip BEFORE rendering (no ffmpeg crash loops) ----
             duration, has_video = video_processor.probe_ai_clip(local_ai_path)
             if not has_video:
                 err = "Invalid AI clip — ffprobe found no video stream."
@@ -222,13 +378,13 @@ def process_drive_queue(
                 db.register_failure(ai_name, err, md5_checksum=ai_md5,
                                     ai_drive_id=ai_id, permanent=True)
                 continue
-            if duration and duration > config.AI_CLIP_MAX_DURATION:
-                err = (f"AI clip is {duration:.1f}s, exceeding AI_CLIP_MAX_DURATION="
-                       f"{config.AI_CLIP_MAX_DURATION}s. Please upload a 0-10s clip.")
-                logger.error(f"  ❌ '{ai_name}': {err}")
-                db.register_failure(ai_name, err, md5_checksum=ai_md5,
-                                    ai_drive_id=ai_id, permanent=True)
-                continue
+
+            # Use the uploaded clip at its exact native duration — no trimming,
+            # no rejection based on length. normalize_ai_clip will convert it
+            # to 9:16 portrait regardless of duration, and the countdown segment
+            # auto-extends if the total is below MIN_TOTAL_DURATION.
+            if duration:
+                logger.info(f"  AI clip duration: {duration:.1f}s (using as-is)")
 
             # ---- Read sheet metadata ----
             metadata = sheet.get_row(ai_num)
@@ -378,23 +534,36 @@ def run_daemon():
     # --- Auto-download assets ---
     ensure_assets()
 
-    # --- Check credentials ---
+    # --- Check credentials (file-based OR .env OAuth Client ID/Secret) ---
+    has_env_oauth = bool(
+        config.GOOGLE_CLIENT_ID.strip()
+        and config.GOOGLE_CLIENT_SECRET.strip()
+    )
     has_creds = (
         config.CREDENTIALS_FILE.exists()
         or config.TOKEN_FILE.exists()
         or config.SERVICE_ACCOUNT_FILE.exists()
+        or has_env_oauth
     )
 
     if not has_creds:
         logger.error(
             "\n" + "!" * 65 + "\n"
             "[GOOGLE CREDENTIALS NOT FOUND]\n"
-            "  Place 'credentials.json' (OAuth) or 'service_account.json'\n"
-            "  in the project directory and restart the daemon.\n"
-            "  See README.md for setup instructions.\n"
+            "  Either add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to your\n"
+            "  .env file, or place 'credentials.json' (OAuth Desktop) or\n"
+            "  'service_account.json' (Service Account) in the project\n"
+            "  directory, then restart the daemon.\n"
+            "  See README.md for step-by-step instructions.\n"
             + "!" * 65
         )
         return
+
+    if has_env_oauth:
+        logger.info(
+            "Using GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET from .env "
+            "(browser authorization will run once, then token.json is reused)."
+        )
 
     # --- Connect to Google Drive ---
     logger.info("Connecting to Google Drive...")

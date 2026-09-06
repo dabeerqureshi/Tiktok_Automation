@@ -403,7 +403,7 @@ def build_solution_segment(answer: str, tts_audio: Path, output_path: Path) -> b
         if has_reveal:
             filter_complex = (
                 f"[1:a]apad=pad_dur={duration},aformat=sample_rates=44100:channel_layouts=stereo[tts];"
-                f"[2:a]volume=0.4,aformat=sample_rates=44100:channel_layouts=stereo[sfx];"
+                f"[2:a]volume=0.8,aformat=sample_rates=44100:channel_layouts=stereo[sfx];"
                 f"[tts][sfx]amix=inputs=2:duration=longest[aout]"
             )
             cmd = [

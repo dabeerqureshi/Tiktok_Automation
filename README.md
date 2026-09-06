@@ -83,20 +83,40 @@ ollama pull llama3.2:3b
 
 You need one set of credentials for **Drive + Sheets** access.
 
-#### Option A: OAuth 2.0 (Recommended for personal Gmail)
+#### Option A: OAuth 2.0 Desktop (Recommended — best for a personal Gmail on this Mac)
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) → Create project
-2. Enable APIs:
+Two equivalent ways to provide the credentials — **pick one**:
+
+**A1 — Client ID + Secret in `.env` (no file needed):** after creating the OAuth app (steps 1–4 below), just paste your Client ID and Client Secret into `.env`:
+
+```
+GOOGLE_CLIENT_ID="xxxx.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="GOCSPX-..."
+```
+
+**A2 — `credentials.json` in the project root:** if you already downloaded the JSON from Google Console, drop it here with that name.
+
+Either way, the **first** `./run.sh` opens a browser tab once; after you click **Allow**, the token is saved to `token.json` and reused forever (no re-auth needed).
+
+1. Go to Google Cloud Console → [console.cloud.google.com](https://console.cloud.google.com/) → **Create project** (or select an existing one)
+2. **Enable APIs** — search & enable:
    - **Google Drive API**
    - **Google Sheets API**
-3. Configure OAuth Consent Screen → External → add your Gmail as test user
-4. Create **OAuth Client ID** (Desktop app) → Download as `credentials.json`
-5. Place `credentials.json` in the project folder
+3. Configure **OAuth consent screen** → *External* → fill app name + your email → **Add your Gmail as a test user**
+4. Create credentials: **Credentials → Create Credentials → OAuth client ID**
+   - Application type: **Desktop app**
+   - Click **Create**
+5. **Download** the JSON → place it in the project root as **`credentials.json`**
+6. Run `./run.sh` — a **browser opens** → sign in with your Gmail → click **Allow**
+   - Done! `token.json` is created and all future runs skip the browser.
 
-#### Option B: Service Account
+#### Option B: Service Account (best for fully headless 24/7)
 
-1. Create a Service Account → download key as `service_account.json`
-2. Share your `AI Automation TikTok` Drive folder and your Google Sheet with the service account email
+This saves as `service_account.json` — no browser flow, runs unattended forever.
+
+1. Google Cloud Console → IAM & Admin → **Service Accounts** → Create Service Account
+2. Create a key → download as **`service_account.json`** → place in project root
+3. **Share** your `AI Automation TikTok` Drive folder **and** your Google Sheet with the service-account email (viewer is enough for downloads/uploads)
 
 ### Step 3 — Configure `.env`
 
@@ -160,7 +180,7 @@ The first time you run it, a browser window will open for Google OAuth. Authoriz
 | **Work dir isolation** | Each riddle gets its own temp folder, auto-cleaned after render |
 | **Ollama fallback** | If Ollama is down, raw sheet explanation is used for TTS |
 | **edge-tts → macOS say → pyttsx3** | Triple TTS fallback chain, never silently silent |
-| **Music auto-download** | Royalty-free CC0 music downloaded from Pixabay on first run |
+| **Music auto-provisioning** | Countdown music + reveal chime are auto-downloaded from Pixabay (CC0); on 403/offline, **FFmpeg synthesizes original royalty-free audio locally** — never blocks a fresh setup |
 | **Log rotation** | `daemon.log` rotates at 10 MB × 5 backups — disk never fills |
 | **Concat fallback** | Lossless `-c copy` concat retries with a full re-encode if stream params ever mismatch |
 | **Graceful shutdown** | SIGINT/SIGTERM handled cleanly without leaving dangling processes |
